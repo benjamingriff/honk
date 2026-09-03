@@ -1,8 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::athena::api::ResultColumn;
-
 use super::values::{Value, ValueKind};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ColumnSpec {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Column {
@@ -22,7 +26,7 @@ pub(crate) struct Rename {
     pub(crate) output: String,
 }
 
-pub(crate) fn rename_columns(columns: &[ResultColumn]) -> (Vec<Column>, Vec<Rename>) {
+pub(crate) fn rename_columns(columns: &[ColumnSpec]) -> (Vec<Column>, Vec<Rename>) {
     let mut used = HashSet::new();
     let mut counts = HashMap::<String, usize>::new();
     let mut renamed = Vec::new();
@@ -65,8 +69,8 @@ pub(crate) fn rename_columns(columns: &[ResultColumn]) -> (Vec<Column>, Vec<Rena
 mod tests {
     use super::*;
 
-    fn column(name: &str) -> ResultColumn {
-        ResultColumn {
+    fn column(name: &str) -> ColumnSpec {
+        ColumnSpec {
             name: name.to_owned(),
             data_type: "varchar".to_owned(),
         }

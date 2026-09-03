@@ -67,7 +67,10 @@ honk/
       api.rs
       query.rs
       sdk.rs
-      metadata.rs
+    metadata/
+      mod.rs
+      api.rs
+      sdk.rs
       values.rs
     output/
       mod.rs
@@ -553,6 +556,12 @@ Exit criteria:
 ## 11. Phase 6: catalog discovery
 
 Goal: complete M3 without running discovery SQL.
+
+Implemented on 2026-09-03. Honk now uses a metadata-only API boundary with no
+query-submission method. `AwsDataCatalog` databases, tables, and descriptions
+use Glue; other catalogs use Athena's metadata APIs. All four discovery
+commands paginate, normalize into stable rows, and share the query output and
+atomic-file pipeline.
 
 Work:
 

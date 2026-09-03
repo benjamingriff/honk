@@ -193,24 +193,23 @@ mod tests {
     use std::io;
 
     use super::*;
-    use crate::athena::api::ResultColumn;
-    use crate::output::rename_columns;
+    use crate::output::{ColumnSpec, rename_columns};
 
     fn columns() -> Vec<Column> {
         rename_columns(&[
-            ResultColumn {
+            ColumnSpec {
                 name: "text".into(),
                 data_type: "varchar".into(),
             },
-            ResultColumn {
+            ColumnSpec {
                 name: "n".into(),
                 data_type: "bigint".into(),
             },
-            ResultColumn {
+            ColumnSpec {
                 name: "ok".into(),
                 data_type: "boolean".into(),
             },
-            ResultColumn {
+            ColumnSpec {
                 name: "missing".into(),
                 data_type: "varchar".into(),
             },

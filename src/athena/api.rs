@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::output::ColumnSpec;
 use crate::policy::athena::ValidatedQuery;
 
 pub(super) type ApiFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ApiError>> + Send + 'a>>;
@@ -58,14 +59,8 @@ pub(super) enum QueryState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResultColumn {
-    pub(crate) name: String,
-    pub(crate) data_type: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResultPage {
-    pub(crate) columns: Vec<ResultColumn>,
+    pub(crate) columns: Vec<ColumnSpec>,
     pub(crate) rows: Vec<Vec<Option<String>>>,
     pub(crate) next_token: Option<String>,
 }

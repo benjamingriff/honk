@@ -24,7 +24,7 @@ pub enum Command {
     /// Run one read-only SQL statement.
     Query(QueryArgs),
 
-    /// List configured Athena data catalogs.
+    /// List Athena data catalogs available to the connection.
     Catalogs(DataArgs),
 
     /// List databases in the configured catalog.

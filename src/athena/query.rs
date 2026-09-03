@@ -497,8 +497,9 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
-    use crate::athena::api::{ResultColumn, ResultPage};
+    use crate::athena::api::ResultPage;
     use crate::config::Policy;
+    use crate::output::ColumnSpec;
 
     struct MockApi {
         workgroup: WorkGroup,
@@ -689,7 +690,7 @@ mod tests {
 
     fn page() -> ResultPage {
         ResultPage {
-            columns: vec![ResultColumn {
+            columns: vec![ColumnSpec {
                 name: "answer".to_owned(),
                 data_type: "integer".to_owned(),
             }],
@@ -777,7 +778,7 @@ mod tests {
     #[tokio::test]
     async fn pages_every_result_and_skips_select_header_only_once() {
         let api = MockApi::succeeding([QueryState::Succeeded]);
-        let columns = vec![ResultColumn {
+        let columns = vec![ColumnSpec {
             name: "n".to_owned(),
             data_type: "integer".to_owned(),
         }];
@@ -814,7 +815,7 @@ mod tests {
     async fn utility_result_keeps_its_first_row() {
         let api = MockApi::succeeding([QueryState::Succeeded]);
         *api.pages.lock().expect("pages lock") = VecDeque::from([Ok(ResultPage {
-            columns: vec![ResultColumn {
+            columns: vec![ColumnSpec {
                 name: "tab_name".into(),
                 data_type: "varchar".into(),
             }],
@@ -841,15 +842,15 @@ mod tests {
         let api = MockApi::succeeding([QueryState::Succeeded]);
         *api.pages.lock().expect("pages lock") = VecDeque::from([Ok(ResultPage {
             columns: vec![
-                ResultColumn {
+                ColumnSpec {
                     name: String::new(),
                     data_type: "varchar".into(),
                 },
-                ResultColumn {
+                ColumnSpec {
                     name: "value".into(),
                     data_type: "varchar".into(),
                 },
-                ResultColumn {
+                ColumnSpec {
                     name: "value".into(),
                     data_type: "varchar".into(),
                 },

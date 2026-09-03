@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::athena::AthenaError;
 use crate::auth::AuthError;
+use crate::metadata::MetadataError;
 use crate::policy::athena::PolicyError;
 
 #[derive(Debug, Error)]
@@ -53,8 +54,14 @@ pub enum AppError {
     #[error(transparent)]
     Athena(#[from] AthenaError),
 
+    #[error(transparent)]
+    Metadata(#[from] MetadataError),
+
     #[error("{details}")]
     OutputArguments { details: String },
+
+    #[error("{details}")]
+    MetadataArguments { details: String },
 
     #[error("{feature} is not implemented yet")]
     NotImplemented { feature: &'static str },
@@ -82,9 +89,11 @@ impl AppError {
             | Self::SqlInputNotUtf8 { .. }
             | Self::Policy(_)
             | Self::OutputArguments { .. }
+            | Self::MetadataArguments { .. }
             | Self::NotImplemented { .. } => 2,
             Self::Authentication(_) => 3,
             Self::Athena(error) => error.exit_code(),
+            Self::Metadata(error) => error.exit_code(),
         }
     }
 }

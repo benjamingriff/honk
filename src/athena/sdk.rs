@@ -175,7 +175,7 @@ impl AthenaApi for SdkAthena {
                 .ok_or(ApiError::Unavailable)?
                 .column_info()
                 .iter()
-                .map(|column| super::api::ResultColumn {
+                .map(|column| crate::output::ColumnSpec {
                     name: column
                         .label()
                         .filter(|label| !label.is_empty())

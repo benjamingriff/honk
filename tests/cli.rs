@@ -320,6 +320,27 @@ fn invalid_output_formats_are_invocation_errors() {
 }
 
 #[test]
+fn describe_rejects_overqualified_names_before_authentication() {
+    let home = home_with_config(VALID_CONFIG);
+    let output = honk(
+        home.path(),
+        &[
+            "describe",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+            "catalog.database.table",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("describe target must be TABLE or DATABASE.TABLE")
+    );
+}
+
+#[test]
 fn help_documents_the_phase_one_command_contract() {
     let home = home_with_config(VALID_CONFIG);
     let output = honk(home.path(), &["--help"]);

@@ -214,13 +214,13 @@ fn write_horizontal_row(
 mod tests {
     use super::super::columns::rename_columns;
     use super::*;
-    use crate::athena::api::ResultColumn;
+    use crate::output::ColumnSpec;
 
     fn columns(names: &[&str]) -> Vec<Column> {
         rename_columns(
             &names
                 .iter()
-                .map(|name| ResultColumn {
+                .map(|name| ColumnSpec {
                     name: (*name).to_owned(),
                     data_type: "varchar".to_owned(),
                 })
