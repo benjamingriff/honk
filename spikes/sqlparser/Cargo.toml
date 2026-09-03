@@ -1,0 +1,12 @@
+[package]
+name = "honk-sqlparser-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+sqlparser = { version = "=0.62.0", features = ["visitor"] }
+
+[dev-dependencies]
+proptest = "1.11.0"
+sqlglot-rust = "=0.10.29"
