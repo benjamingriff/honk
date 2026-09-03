@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
 use std::path::Path;
@@ -126,6 +127,42 @@ fn connections_lists_safe_fields() {
 }
 
 #[test]
+fn broken_stdout_pipe_is_an_output_error_not_a_panic() {
+    let mut config = String::new();
+    for index in 0..2_000 {
+        writeln!(
+            config,
+            r#"
+[connections.connection_{index}]
+account = "111111111111"
+region = "eu-west-1"
+role_arn = "arn:aws:iam::111111111111:role/honk-readonly"
+workgroup = "analytics-dev"
+catalog = "AwsDataCatalog"
+database = "analytics_dev"
+policy = "read_only"
+query_timeout = "30m"
+"#
+        )
+        .expect("configuration");
+    }
+    let home = home_with_config(&config);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_honk"))
+        .arg("connections")
+        .env("HOME", home.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start honk");
+    drop(child.stdout.take());
+    let output = child.wait_with_output().expect("wait for honk");
+    assert_eq!(output.status.code(), Some(5));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot write command output"));
+    assert!(!stderr.contains("unexpected internal error"));
+}
+
+#[test]
 fn every_data_command_requires_connection_and_session() {
     let home = home_with_config(VALID_CONFIG);
     for arguments in [
@@ -140,6 +177,60 @@ fn every_data_command_requires_connection_and_session() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("--connection"), "arguments: {arguments:?}");
         assert!(stderr.contains("--session"), "arguments: {arguments:?}");
+    }
+}
+
+#[test]
+fn every_aws_command_keeps_authentication_text_off_stdout() {
+    let home = home_with_config(VALID_CONFIG);
+    for arguments in [
+        vec![
+            "query",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+            "SELECT 1",
+        ],
+        vec![
+            "catalogs",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+        ],
+        vec![
+            "databases",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+        ],
+        vec!["tables", "--connection", "dev", "--session", "dev-session"],
+        vec![
+            "describe",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+            "orders",
+        ],
+        vec![
+            "session",
+            "check",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+        ],
+    ] {
+        let output = honk(home.path(), &arguments);
+        assert_eq!(output.status.code(), Some(3), "arguments: {arguments:?}");
+        assert!(output.stdout.is_empty(), "arguments: {arguments:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("AWS session profile"),
+            "arguments: {arguments:?}"
+        );
     }
 }
 
@@ -688,4 +779,47 @@ aws_access_key_id = incomplete-alternative
     assert_eq!(output.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&output.stderr).contains("long-lived credentials"));
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn simultaneous_processes_read_the_same_profile_without_modifying_it() {
+    let home = home_with_config(VALID_CONFIG);
+    let credentials = r"
+[dev-session]
+aws_access_key_id = TEST_ACCESS_KEY
+aws_secret_access_key = DO_NOT_PRINT_SECRET
+";
+    write_aws_credentials(home.path(), credentials);
+    let path = home.path().join(".aws/credentials");
+    let before = fs::read(&path).expect("credentials before");
+
+    let spawn = || {
+        Command::new(env!("CARGO_BIN_EXE_honk"))
+            .args([
+                "session",
+                "check",
+                "--connection",
+                "dev",
+                "--session",
+                "dev-session",
+            ])
+            .env("HOME", home.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start honk")
+    };
+    let first = spawn();
+    let second = spawn();
+    for output in [
+        first.wait_with_output().expect("first output"),
+        second.wait_with_output().expect("second output"),
+    ] {
+        assert_eq!(output.status.code(), Some(3));
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("long-lived credentials"));
+        assert!(!stderr.contains("DO_NOT_PRINT"));
+    }
+    assert_eq!(fs::read(path).expect("credentials after"), before);
 }

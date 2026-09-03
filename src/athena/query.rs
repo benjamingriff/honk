@@ -385,15 +385,7 @@ pub(super) fn write_operations(
 }
 
 fn sanitize_metadata(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    for character in value.chars() {
-        if character.is_control() {
-            output.extend(character.escape_unicode());
-        } else {
-            output.push(character);
-        }
-    }
-    output
+    crate::diagnostics::terminal_text(value)
 }
 
 fn format_milliseconds(value: Option<i64>) -> String {
@@ -509,8 +501,12 @@ mod tests {
         calls: Mutex<Vec<String>>,
         start_requests: Mutex<Vec<RecordedStart>>,
         stop_result: Mutex<Result<(), ApiError>>,
+        block_start: AtomicBool,
+        start_started: Notify,
         block_poll: AtomicBool,
         poll_started: Notify,
+        block_results: AtomicBool,
+        results_started: Notify,
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -545,8 +541,12 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
                 start_requests: Mutex::new(Vec::new()),
                 stop_result: Mutex::new(Ok(())),
+                block_start: AtomicBool::new(false),
+                start_started: Notify::new(),
                 block_poll: AtomicBool::new(false),
                 poll_started: Notify::new(),
+                block_results: AtomicBool::new(false),
+                results_started: Notify::new(),
             }
         }
 
@@ -586,8 +586,14 @@ mod tests {
                     workgroup: request.workgroup.to_owned(),
                     output_location: request.output_location.map(str::to_owned),
                 });
-            let result = self.start_result.lock().expect("start lock").clone();
-            Box::pin(async move { result })
+            Box::pin(async move {
+                if self.block_start.load(Ordering::SeqCst) {
+                    self.start_started.notify_one();
+                    std::future::pending().await
+                } else {
+                    self.start_result.lock().expect("start lock").clone()
+                }
+            })
         }
 
         fn get_query_status<'a>(
@@ -633,13 +639,18 @@ mod tests {
                     Some(token) => format!("results:{query_id}:{token}"),
                     None => format!("results:{query_id}"),
                 });
-            let result = self
-                .pages
-                .lock()
-                .expect("pages lock")
-                .pop_front()
-                .unwrap_or(Err(ApiError::Unavailable));
-            Box::pin(async move { result })
+            Box::pin(async move {
+                if self.block_results.load(Ordering::SeqCst) {
+                    self.results_started.notify_one();
+                    std::future::pending().await
+                } else {
+                    self.pages
+                        .lock()
+                        .expect("pages lock")
+                        .pop_front()
+                        .unwrap_or(Err(ApiError::Unavailable))
+                }
+            })
         }
     }
 
@@ -1115,6 +1126,80 @@ mod tests {
             assert!(error.to_string().contains("query-123"));
             assert!(error.to_string().contains("cancellation was requested"));
             assert!(api.calls().contains(&"stop:query-123".to_owned()));
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_and_interrupt_during_submission_have_no_query_to_cancel() {
+        for reason in [Termination::Timeout, Termination::Interrupted] {
+            let api = MockApi::succeeding([]);
+            api.block_start.store(true, Ordering::SeqCst);
+            let termination = async {
+                api.start_started.notified().await;
+                reason
+            };
+            let mut output = Vec::new();
+            let error = execute_with_termination(
+                &api,
+                QueryContext {
+                    connection: &connection(None),
+                    query: &query(),
+                    format: OutputFormat::Table,
+                    table_width: Some(120),
+                },
+                &mut output,
+                &RecordingSleeper::default(),
+                termination,
+            )
+            .await
+            .expect_err("terminated during submission");
+            assert_eq!(
+                error.exit_code(),
+                if reason == Termination::Interrupted {
+                    130
+                } else {
+                    4
+                }
+            );
+            assert!(!error.to_string().contains("query-123"));
+            assert!(!api.calls().iter().any(|call| call.starts_with("stop:")));
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_and_interrupt_during_results_keep_succeeded_query_terminal() {
+        for reason in [Termination::Timeout, Termination::Interrupted] {
+            let api = MockApi::succeeding([QueryState::Succeeded]);
+            api.block_results.store(true, Ordering::SeqCst);
+            let termination = async {
+                api.results_started.notified().await;
+                reason
+            };
+            let mut output = Vec::new();
+            let error = execute_with_termination(
+                &api,
+                QueryContext {
+                    connection: &connection(None),
+                    query: &query(),
+                    format: OutputFormat::Table,
+                    table_width: Some(120),
+                },
+                &mut output,
+                &RecordingSleeper::default(),
+                termination,
+            )
+            .await
+            .expect_err("terminated during result retrieval");
+            assert_eq!(
+                error.exit_code(),
+                if reason == Termination::Interrupted {
+                    130
+                } else {
+                    4
+                }
+            );
+            assert!(error.to_string().contains("query-123"));
+            assert!(!api.calls().iter().any(|call| call.starts_with("stop:")));
         }
     }
 

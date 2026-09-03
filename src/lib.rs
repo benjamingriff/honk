@@ -2,6 +2,7 @@ pub mod athena;
 pub mod auth;
 pub mod cli;
 mod config;
+mod diagnostics;
 pub mod error;
 mod metadata;
 mod output;
@@ -9,8 +10,11 @@ mod paths;
 pub mod policy;
 mod sql_input;
 
+use std::io::Write as _;
+
 use crate::cli::{Cli, Command, ConfigCommand, DataArgs, DescribeArgs, QueryArgs, SessionCommand};
 use crate::config::Config;
+pub use crate::diagnostics::install_panic_hook;
 use crate::error::AppError;
 
 /// Runs one parsed Honk command.
@@ -26,19 +30,24 @@ pub async fn run(cli: Cli) -> Result<(), AppError> {
     match cli.command {
         Command::Connections => {
             let config = Config::load(&config_path)?;
-            print!("{}", config.render_connections());
+            std::io::stdout()
+                .lock()
+                .write_all(config.render_connections().as_bytes())
+                .map_err(|source| AppError::CommandOutput { source })?;
             Ok(())
         }
         Command::Config {
             command: ConfigCommand::Check,
         } => {
             let config = Config::load(&config_path)?;
-            println!(
+            writeln!(
+                std::io::stdout().lock(),
                 "Configuration is valid: {} connection{} in {}",
                 config.len(),
                 if config.len() == 1 { "" } else { "s" },
                 config_path.display()
-            );
+            )
+            .map_err(|source| AppError::CommandOutput { source })?;
             Ok(())
         }
         Command::Query(arguments) => run_query_command(&config_path, arguments).await,
@@ -59,13 +68,15 @@ pub async fn run(cli: Cli) -> Result<(), AppError> {
                 paths::aws_credentials_file()?,
             )
             .await?;
-            println!(
+            writeln!(
+                std::io::stdout().lock(),
                 "Session {:?} is valid for connection {:?}: account {}, role {}",
                 arguments.session,
                 arguments.connection,
                 session.account(),
                 session.role_name()
-            );
+            )
+            .map_err(|source| AppError::CommandOutput { source })?;
             Ok(())
         }
     }

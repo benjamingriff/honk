@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "the command contract lands before the AWS and output implementations"
-)]
-
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};

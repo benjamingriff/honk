@@ -43,7 +43,6 @@ impl VerifiedSession {
         &self.role_name
     }
 
-    #[allow(dead_code, reason = "Phase 4 will build Athena from this provider")]
     pub(crate) fn credentials_provider(&self) -> SharedCredentialsProvider {
         self.provider.clone()
     }

@@ -63,18 +63,14 @@ pub enum AppError {
     #[error("{details}")]
     MetadataArguments { details: String },
 
-    #[error("{feature} is not implemented yet")]
-    NotImplemented { feature: &'static str },
+    #[error("cannot write command output: {source}")]
+    CommandOutput {
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl AppError {
-    /// Constructs an error for a command whose local contract exists but whose
-    /// external integration has not landed.
-    #[must_use]
-    pub const fn not_implemented(feature: &'static str) -> Self {
-        Self::NotImplemented { feature }
-    }
-
     /// Returns the stable process exit code for this error category.
     #[must_use]
     pub const fn exit_code(&self) -> u8 {
@@ -89,11 +85,90 @@ impl AppError {
             | Self::SqlInputNotUtf8 { .. }
             | Self::Policy(_)
             | Self::OutputArguments { .. }
-            | Self::MetadataArguments { .. }
-            | Self::NotImplemented { .. } => 2,
+            | Self::MetadataArguments { .. } => 2,
             Self::Authentication(_) => 3,
             Self::Athena(error) => error.exit_code(),
             Self::Metadata(error) => error.exit_code(),
+            Self::CommandOutput { .. } => 5,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::*;
+    use crate::athena::{CancellationOutcome, Operation};
+    use crate::metadata;
+
+    #[test]
+    fn every_public_exit_category_has_its_stable_code() {
+        let errors = [
+            (AppError::MissingHome, 2),
+            (
+                AuthError::ProfileUnavailable {
+                    profile: "test-session".into(),
+                }
+                .into(),
+                3,
+            ),
+            (
+                AthenaError::OperationFailed {
+                    operation: Operation::GetWorkGroup,
+                    query_id: None,
+                    cancellation: CancellationOutcome::NotNeeded,
+                }
+                .into(),
+                4,
+            ),
+            (
+                AthenaError::Output {
+                    query_id: "test-query".into(),
+                    source: io::Error::other("test output failure"),
+                }
+                .into(),
+                5,
+            ),
+            (
+                AthenaError::Interrupted {
+                    query_id: Some("test-query".into()),
+                    cancellation: CancellationOutcome::Requested,
+                }
+                .into(),
+                130,
+            ),
+            (
+                metadata::MetadataError::CredentialsExpired {
+                    operation: metadata::Operation::Catalogs,
+                }
+                .into(),
+                3,
+            ),
+            (
+                metadata::MetadataError::ProviderFailed {
+                    operation: metadata::Operation::Tables,
+                    catalog: "test-catalog".into(),
+                }
+                .into(),
+                4,
+            ),
+            (
+                metadata::MetadataError::Output {
+                    source: io::Error::other("test output failure"),
+                }
+                .into(),
+                5,
+            ),
+            (
+                AppError::CommandOutput {
+                    source: io::Error::new(io::ErrorKind::BrokenPipe, "test broken pipe"),
+                },
+                5,
+            ),
+        ];
+        for (error, expected) in errors {
+            assert_eq!(error.exit_code(), expected, "{error}");
         }
     }
 }

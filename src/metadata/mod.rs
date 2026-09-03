@@ -2,7 +2,7 @@ mod api;
 mod sdk;
 
 use std::fmt;
-use std::io::{self, Write as _};
+use std::io;
 use std::path::Path;
 
 use thiserror::Error;
@@ -44,7 +44,7 @@ pub enum MetadataError {
         catalog: String,
     },
 
-    #[error("table {database}.{table} was not found in catalog {catalog:?}")]
+    #[error("table {database:?}.{table:?} was not found in catalog {catalog:?}")]
     TableNotFound {
         catalog: String,
         database: String,
@@ -256,7 +256,9 @@ async fn run(
     let output_path = output
         .commit()
         .map_err(|source| MetadataError::Output { source })?;
+    let stderr = io::stderr();
     write_operations(
+        &mut stderr.lock(),
         context.connection,
         session_name,
         operation,
@@ -616,6 +618,7 @@ fn describe_row(
 
 #[allow(clippy::too_many_arguments)]
 fn write_operations(
+    writer: &mut dyn io::Write,
     connection: &Connection,
     session_name: &str,
     operation: Operation,
@@ -627,18 +630,36 @@ fn write_operations(
     if quiet {
         return Ok(());
     }
-    let stderr = io::stderr();
-    let mut writer = stderr.lock();
-    writeln!(writer, "Connection: {}", connection.name)?;
-    writeln!(writer, "Session: {session_name}")?;
+    writeln!(
+        writer,
+        "Connection: {}",
+        crate::diagnostics::terminal_text(&connection.name)
+    )?;
+    writeln!(
+        writer,
+        "Session: {}",
+        crate::diagnostics::terminal_text(session_name)
+    )?;
     writeln!(writer, "Operation: {operation}")?;
-    writeln!(writer, "Catalog: {}", connection.catalog)?;
+    writeln!(
+        writer,
+        "Catalog: {}",
+        crate::diagnostics::terminal_text(&connection.catalog)
+    )?;
     if let Some(database) = database {
-        writeln!(writer, "Database: {database}")?;
+        writeln!(
+            writer,
+            "Database: {}",
+            crate::diagnostics::terminal_text(database)
+        )?;
     }
     writeln!(writer, "Rows: {rows}")?;
     if let Some(path) = output_path {
-        writeln!(writer, "Output: {}", path.display())?;
+        writeln!(
+            writer,
+            "Output: {}",
+            crate::diagnostics::terminal_text(&path.display().to_string())
+        )?;
     }
     Ok(())
 }
@@ -646,6 +667,7 @@ fn write_operations(
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use super::*;
@@ -666,6 +688,8 @@ mod tests {
     #[derive(Default)]
     struct MockMetadata {
         calls: Mutex<Vec<Call>>,
+        malformed_catalog: AtomicBool,
+        describe_error: Mutex<Option<ApiError>>,
     }
 
     impl MockMetadata {
@@ -693,7 +717,11 @@ mod tests {
                 };
                 Ok(Page {
                     items: vec![Catalog {
-                        name: name.to_owned(),
+                        name: if self.malformed_catalog.load(Ordering::SeqCst) {
+                            String::new()
+                        } else {
+                            name.to_owned()
+                        },
                         kind: None,
                         status: None,
                     }],
@@ -749,7 +777,12 @@ mod tests {
             table: &'a str,
         ) -> ApiFuture<'a, Table> {
             self.record(Call::GlueDescribe);
-            Box::pin(async move { Ok(empty_table(table)) })
+            Box::pin(async move {
+                match *self.describe_error.lock().expect("describe error") {
+                    Some(error) => Err(error),
+                    None => Ok(empty_table(table)),
+                }
+            })
         }
 
         fn get_athena_table<'a>(
@@ -760,7 +793,12 @@ mod tests {
             _workgroup: &'a str,
         ) -> ApiFuture<'a, Table> {
             self.record(Call::AthenaDescribe);
-            Box::pin(async move { Ok(empty_table(table)) })
+            Box::pin(async move {
+                match *self.describe_error.lock().expect("describe error") {
+                    Some(error) => Err(error),
+                    None => Ok(empty_table(table)),
+                }
+            })
         }
     }
 
@@ -981,5 +1019,84 @@ mod tests {
                 Call::AthenaDescribe,
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn malformed_catalogs_and_missing_tables_have_stable_errors() {
+        let malformed = MockMetadata::default();
+        malformed.malformed_catalog.store(true, Ordering::SeqCst);
+        let connection = connection("AwsDataCatalog");
+        let error = discover(
+            &malformed,
+            &Request::Catalogs,
+            &Context {
+                connection: &connection,
+            },
+        )
+        .await
+        .expect_err("catalog name is required");
+        assert!(matches!(
+            error,
+            MetadataError::MalformedResponse {
+                operation: Operation::Catalogs
+            }
+        ));
+        assert_eq!(error.exit_code(), 4);
+
+        let missing = MockMetadata::default();
+        *missing.describe_error.lock().expect("describe error") = Some(ApiError::NotFound);
+        let error = discover(
+            &missing,
+            &Request::Describe {
+                database: "analytics",
+                table: "orders",
+            },
+            &Context {
+                connection: &connection,
+            },
+        )
+        .await
+        .expect_err("missing table");
+        assert!(matches!(error, MetadataError::TableNotFound { .. }));
+        assert_eq!(error.exit_code(), 4);
+        assert!(error.to_string().contains("analytics"));
+        assert!(error.to_string().contains("orders"));
+    }
+
+    #[test]
+    fn absent_optional_table_fields_still_produce_one_description_row() {
+        let rows = describe_rows("AwsDataCatalog", "analytics", &empty_table("orders"));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][2].as_deref(), Some("orders"));
+        assert_eq!(rows[0][3], None);
+        assert_eq!(rows[0][4].as_deref(), Some("false"));
+        assert_eq!(rows[0][5].as_deref(), Some("false"));
+        assert_eq!(rows[0][7], None);
+        assert_eq!(rows[0][12].as_deref(), Some("{}"));
+    }
+
+    #[test]
+    fn metadata_operations_escape_control_characters() {
+        let mut connection = connection("AwsDataCatalog");
+        connection.name = "dev\nspoofed".into();
+        let mut output = Vec::new();
+        write_operations(
+            &mut output,
+            &connection,
+            "session\u{1b}[31m",
+            Operation::Tables,
+            Some("analytics\rname"),
+            0,
+            None,
+            false,
+        )
+        .expect("operations");
+        let output = String::from_utf8(output).expect("UTF-8");
+        assert!(!output.contains('\u{1b}'));
+        assert!(!output.contains('\r'));
+        assert_eq!(output.lines().count(), 6);
+        assert!(output.contains("dev\\u{a}spoofed"));
+        assert!(output.contains("session\\u{1b}[31m"));
+        assert!(output.contains("analytics\\u{d}name"));
     }
 }
