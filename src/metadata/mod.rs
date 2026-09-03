@@ -38,10 +38,13 @@ pub enum MetadataError {
     )]
     CredentialsExpired { operation: Operation },
 
-    #[error("AWS denied permission to {operation} in catalog {catalog:?}")]
+    #[error(
+        "AWS denied permission to {operation}{catalog_context}",
+        catalog_context = catalog_context(.catalog.as_deref())
+    )]
     AccessDenied {
         operation: Operation,
-        catalog: String,
+        catalog: Option<String>,
     },
 
     #[error("table {database:?}.{table:?} was not found in catalog {catalog:?}")]
@@ -52,11 +55,12 @@ pub enum MetadataError {
     },
 
     #[error(
-        "the AWS metadata service failed while attempting to {operation} in catalog {catalog:?}"
+        "the AWS metadata service failed while attempting to {operation}{catalog_context}",
+        catalog_context = catalog_context(.catalog.as_deref())
     )]
     ProviderFailed {
         operation: Operation,
-        catalog: String,
+        catalog: Option<String>,
     },
 
     #[error(
@@ -75,6 +79,10 @@ pub enum MetadataError {
         #[source]
         source: io::Error,
     },
+}
+
+fn catalog_context(catalog: Option<&str>) -> String {
+    catalog.map_or_else(String::new, |value| format!(" in catalog {value:?}"))
 }
 
 impl MetadataError {
@@ -101,7 +109,10 @@ pub(crate) async fn run_catalogs(
     run(
         &client,
         Request::Catalogs,
-        Context { connection },
+        Context {
+            connection,
+            catalog: None,
+        },
         session_name,
         output_plan,
         quiet,
@@ -113,6 +124,7 @@ pub(crate) async fn run_databases(
     connection: &Connection,
     session_name: &str,
     session: &VerifiedSession,
+    catalog: &str,
     output_plan: OutputPlan,
     quiet: bool,
 ) -> Result<(), MetadataError> {
@@ -120,7 +132,10 @@ pub(crate) async fn run_databases(
     run(
         &client,
         Request::Databases,
-        Context { connection },
+        Context {
+            connection,
+            catalog: Some(catalog),
+        },
         session_name,
         output_plan,
         quiet,
@@ -132,6 +147,7 @@ pub(crate) async fn run_tables(
     connection: &Connection,
     session_name: &str,
     session: &VerifiedSession,
+    catalog: &str,
     database: &str,
     output_plan: OutputPlan,
     quiet: bool,
@@ -140,7 +156,10 @@ pub(crate) async fn run_tables(
     run(
         &client,
         Request::Tables { database },
-        Context { connection },
+        Context {
+            connection,
+            catalog: Some(catalog),
+        },
         session_name,
         output_plan,
         quiet,
@@ -153,6 +172,7 @@ pub(crate) async fn run_describe(
     session_name: &str,
     session: &VerifiedSession,
     object: &ObjectName,
+    catalog: &str,
     output_plan: OutputPlan,
     quiet: bool,
 ) -> Result<(), MetadataError> {
@@ -163,7 +183,10 @@ pub(crate) async fn run_describe(
             database: &object.database,
             table: &object.table,
         },
-        Context { connection },
+        Context {
+            connection,
+            catalog: Some(catalog),
+        },
         session_name,
         output_plan,
         quiet,
@@ -179,13 +202,26 @@ pub(crate) struct ObjectName {
 
 pub(crate) fn parse_object(
     value: &str,
-    default_database: &str,
+    requested_database: Option<&str>,
+    default_database: Option<&str>,
 ) -> Result<ObjectName, &'static str> {
     let parts = value.split('.').collect::<Vec<_>>();
     let (database, table) = match parts.as_slice() {
-        [table] if !table.trim().is_empty() => (default_database, *table),
-        [database, table] if !database.trim().is_empty() && !table.trim().is_empty() => {
+        [table] if !table.trim().is_empty() => (
+            requested_database.or(default_database).ok_or(
+                "describe requires a database; pass --database, qualify the table, or set default_database",
+            )?,
+            *table,
+        ),
+        [database, table]
+            if requested_database.is_none()
+                && !database.trim().is_empty()
+                && !table.trim().is_empty() =>
+        {
             (*database, *table)
+        }
+        [_, _] if requested_database.is_some() => {
+            return Err("--database cannot be combined with a database-qualified describe target");
         }
         _ => return Err("describe target must be TABLE or DATABASE.TABLE"),
     };
@@ -197,6 +233,7 @@ pub(crate) fn parse_object(
 
 struct Context<'a> {
     connection: &'a Connection,
+    catalog: Option<&'a str>,
 }
 
 enum Request<'a> {
@@ -262,6 +299,7 @@ async fn run(
         context.connection,
         session_name,
         operation,
+        context.catalog,
         database.as_deref(),
         row_count,
         output_path.as_deref(),
@@ -280,7 +318,7 @@ async fn discover(
         Request::Catalogs => {
             let items = all_catalogs(api, &connection.workgroup)
                 .await
-                .map_err(|error| map_error(error, request, connection, None, None))?;
+                .map_err(|error| map_error(error, request, None, None, None))?;
             if items.iter().any(|item| item.name.is_empty()) {
                 return Err(MetadataError::MalformedResponse {
                     operation: Operation::Catalogs,
@@ -289,42 +327,38 @@ async fn discover(
             Ok((catalog_columns(), catalog_rows(&items)))
         }
         Request::Databases => {
-            let items = if is_glue_catalog(&connection.catalog) {
+            let catalog = context.catalog.expect("databases requires a catalog");
+            let items = if is_glue_catalog(catalog) {
                 all_glue_databases(api, &connection.account).await
             } else {
-                all_athena_databases(api, &connection.catalog, &connection.workgroup).await
+                all_athena_databases(api, catalog, &connection.workgroup).await
             }
-            .map_err(|error| map_error(error, request, connection, None, None))?;
-            Ok((
-                database_columns(),
-                database_rows(&connection.catalog, &items),
-            ))
+            .map_err(|error| map_error(error, request, Some(catalog), None, None))?;
+            Ok((database_columns(), database_rows(catalog, &items)))
         }
         Request::Tables { database } => {
-            let items = if is_glue_catalog(&connection.catalog) {
+            let catalog = context.catalog.expect("tables requires a catalog");
+            let items = if is_glue_catalog(catalog) {
                 all_glue_tables(api, &connection.account, database).await
             } else {
-                all_athena_tables(api, &connection.catalog, database, &connection.workgroup).await
+                all_athena_tables(api, catalog, database, &connection.workgroup).await
             }
-            .map_err(|error| map_error(error, request, connection, Some(database), None))?;
-            Ok((
-                table_columns(),
-                table_rows(&connection.catalog, database, &items),
-            ))
+            .map_err(|error| map_error(error, request, Some(catalog), Some(database), None))?;
+            Ok((table_columns(), table_rows(catalog, database, &items)))
         }
         Request::Describe { database, table } => {
-            let item = if is_glue_catalog(&connection.catalog) {
+            let catalog = context.catalog.expect("describe requires a catalog");
+            let item = if is_glue_catalog(catalog) {
                 api.get_glue_table(&connection.account, database, table)
                     .await
             } else {
-                api.get_athena_table(&connection.catalog, database, table, &connection.workgroup)
+                api.get_athena_table(catalog, database, table, &connection.workgroup)
                     .await
             }
-            .map_err(|error| map_error(error, request, connection, Some(database), Some(table)))?;
-            Ok((
-                describe_columns(),
-                describe_rows(&connection.catalog, database, &item),
-            ))
+            .map_err(|error| {
+                map_error(error, request, Some(catalog), Some(database), Some(table))
+            })?;
+            Ok((describe_columns(), describe_rows(catalog, database, &item)))
         }
     }
 }
@@ -419,7 +453,7 @@ async fn all_athena_tables(
 fn map_error(
     error: ApiError,
     request: &Request<'_>,
-    connection: &Connection,
+    catalog: Option<&str>,
     database: Option<&str>,
     table: Option<&str>,
 ) -> MetadataError {
@@ -428,16 +462,16 @@ fn map_error(
         ApiError::ExpiredCredentials => MetadataError::CredentialsExpired { operation },
         ApiError::AccessDenied => MetadataError::AccessDenied {
             operation,
-            catalog: connection.catalog.clone(),
+            catalog: catalog.map(str::to_owned),
         },
         ApiError::NotFound if operation == Operation::Describe => MetadataError::TableNotFound {
-            catalog: connection.catalog.clone(),
+            catalog: catalog.unwrap_or_default().to_owned(),
             database: database.unwrap_or_default().to_owned(),
             table: table.unwrap_or_default().to_owned(),
         },
         ApiError::NotFound | ApiError::Unavailable => MetadataError::ProviderFailed {
             operation,
-            catalog: connection.catalog.clone(),
+            catalog: catalog.map(str::to_owned),
         },
     }
 }
@@ -622,6 +656,7 @@ fn write_operations(
     connection: &Connection,
     session_name: &str,
     operation: Operation,
+    catalog: Option<&str>,
     database: Option<&str>,
     rows: usize,
     output_path: Option<&Path>,
@@ -641,11 +676,13 @@ fn write_operations(
         crate::diagnostics::terminal_text(session_name)
     )?;
     writeln!(writer, "Operation: {operation}")?;
-    writeln!(
-        writer,
-        "Catalog: {}",
-        crate::diagnostics::terminal_text(&connection.catalog)
-    )?;
+    if let Some(catalog) = catalog {
+        writeln!(
+            writer,
+            "Catalog: {}",
+            crate::diagnostics::terminal_text(catalog)
+        )?;
+    }
     if let Some(database) = database {
         writeln!(
             writer,
@@ -829,8 +866,8 @@ mod tests {
             region: "eu-west-1".into(),
             role_arn: "arn:aws:iam::123456789012:role/test".into(),
             workgroup: "primary".into(),
-            catalog: catalog.into(),
-            database: "analytics".into(),
+            default_catalog: Some(catalog.into()),
+            default_database: Some("analytics".into()),
             output_location: None,
             policy: Policy::ReadOnly,
             query_timeout: Duration::from_secs(60),
@@ -840,21 +877,30 @@ mod tests {
     #[test]
     fn parses_default_and_qualified_objects() {
         assert_eq!(
-            parse_object("orders", "analytics"),
+            parse_object("orders", None, Some("analytics")),
             Ok(ObjectName {
                 database: "analytics".into(),
                 table: "orders".into(),
             })
         );
         assert_eq!(
-            parse_object("archive.orders", "analytics"),
+            parse_object("archive.orders", None, Some("analytics")),
             Ok(ObjectName {
                 database: "archive".into(),
                 table: "orders".into(),
             })
         );
-        assert!(parse_object("a.b.c", "analytics").is_err());
-        assert!(parse_object(".orders", "analytics").is_err());
+        assert!(parse_object("a.b.c", None, Some("analytics")).is_err());
+        assert!(parse_object(".orders", None, Some("analytics")).is_err());
+        assert!(parse_object("orders", None, None).is_err());
+        assert!(parse_object("archive.orders", Some("analytics"), None).is_err());
+        assert_eq!(
+            parse_object("orders", Some("archive"), Some("analytics")),
+            Ok(ObjectName {
+                database: "archive".into(),
+                table: "orders".into(),
+            })
+        );
     }
 
     #[test]
@@ -971,16 +1017,26 @@ mod tests {
     async fn glue_catalog_uses_glue_and_federated_catalog_uses_athena() {
         let api = MockMetadata::default();
         let glue = connection("AwsDataCatalog");
-        discover(&api, &Request::Databases, &Context { connection: &glue })
-            .await
-            .expect("Glue databases");
+        discover(
+            &api,
+            &Request::Databases,
+            &Context {
+                connection: &glue,
+                catalog: Some("AwsDataCatalog"),
+            },
+        )
+        .await
+        .expect("Glue databases");
         discover(
             &api,
             &Request::Describe {
                 database: "analytics",
                 table: "orders",
             },
-            &Context { connection: &glue },
+            &Context {
+                connection: &glue,
+                catalog: Some("AwsDataCatalog"),
+            },
         )
         .await
         .expect("Glue describe");
@@ -993,6 +1049,7 @@ mod tests {
             },
             &Context {
                 connection: &federated,
+                catalog: Some("warehouse"),
             },
         )
         .await
@@ -1005,6 +1062,7 @@ mod tests {
             },
             &Context {
                 connection: &federated,
+                catalog: Some("warehouse"),
             },
         )
         .await
@@ -1031,6 +1089,7 @@ mod tests {
             &Request::Catalogs,
             &Context {
                 connection: &connection,
+                catalog: None,
             },
         )
         .await
@@ -1053,6 +1112,7 @@ mod tests {
             },
             &Context {
                 connection: &connection,
+                catalog: Some("AwsDataCatalog"),
             },
         )
         .await
@@ -1085,6 +1145,7 @@ mod tests {
             &connection,
             "session\u{1b}[31m",
             Operation::Tables,
+            Some("AwsDataCatalog"),
             Some("analytics\rname"),
             0,
             None,

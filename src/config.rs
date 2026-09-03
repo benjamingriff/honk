@@ -6,11 +6,14 @@ use std::time::Duration;
 
 use crate::error::AppError;
 
-const CONNECTION_FIELDS: [&str; 9] = [
+const CONNECTION_FIELDS: [&str; 11] = [
     "account",
     "region",
     "role_arn",
     "workgroup",
+    "default_catalog",
+    "default_database",
+    // Legacy names remain readable so existing personal configs keep working.
     "catalog",
     "database",
     "output_location",
@@ -31,8 +34,8 @@ pub struct Connection {
     pub region: String,
     pub role_arn: String,
     pub workgroup: String,
-    pub catalog: String,
-    pub database: String,
+    pub default_catalog: Option<String>,
+    pub default_database: Option<String>,
     pub output_location: Option<String>,
     pub policy: Policy,
     pub query_timeout: Duration,
@@ -122,8 +125,12 @@ impl Config {
             let _ = writeln!(output, "  region: {}", connection.region);
             let _ = writeln!(output, "  role: {}", connection.role_arn);
             let _ = writeln!(output, "  workgroup: {}", connection.workgroup);
-            let _ = writeln!(output, "  catalog: {}", connection.catalog);
-            let _ = writeln!(output, "  database: {}", connection.database);
+            if let Some(catalog) = &connection.default_catalog {
+                let _ = writeln!(output, "  default catalog: {catalog}");
+            }
+            if let Some(database) = &connection.default_database {
+                let _ = writeln!(output, "  default database: {database}");
+            }
             let _ = writeln!(output, "  policy: read_only");
             let _ = writeln!(
                 output,
@@ -172,8 +179,8 @@ fn parse_connection(
     let region = required_string(table, name, "region", issues);
     let role_arn = required_string(table, name, "role_arn", issues);
     let workgroup = required_string(table, name, "workgroup", issues);
-    let catalog = required_string(table, name, "catalog", issues);
-    let database = required_string(table, name, "database", issues);
+    let default_catalog = namespace_default(table, name, "default_catalog", "catalog", issues);
+    let default_database = namespace_default(table, name, "default_database", "database", issues);
     let policy = required_string(table, name, "policy", issues);
     let query_timeout = required_string(table, name, "query_timeout", issues);
     let output_location = optional_string(table, name, "output_location", issues);
@@ -250,12 +257,29 @@ fn parse_connection(
         region: region?,
         role_arn: role_arn?,
         workgroup: workgroup?,
-        catalog: catalog?,
-        database: database?,
+        default_catalog,
+        default_database,
         output_location,
         policy: parsed_policy?,
         query_timeout: parsed_timeout?,
     })
+}
+
+fn namespace_default(
+    table: &toml::Table,
+    connection: &str,
+    field: &str,
+    legacy_field: &str,
+    issues: &mut Vec<String>,
+) -> Option<String> {
+    let value = optional_string(table, connection, field, issues);
+    let legacy = optional_string(table, connection, legacy_field, issues);
+    if value.is_some() && legacy.is_some() {
+        issues.push(format!(
+            "connection {connection:?} cannot set both {field:?} and legacy field {legacy_field:?}"
+        ));
+    }
+    value.or(legacy)
 }
 
 fn required_string(
@@ -383,8 +407,8 @@ account = "111111111111"
 region = "eu-west-1"
 role_arn = "arn:aws:iam::111111111111:role/honk-readonly"
 workgroup = "analytics-dev"
-catalog = "AwsDataCatalog"
-database = "analytics_dev"
+default_catalog = "AwsDataCatalog"
+default_database = "analytics_dev"
 output_location = "s3://company-results/dev/"
 policy = "read_only"
 query_timeout = "30m"
@@ -397,6 +421,14 @@ query_timeout = "30m"
         assert_eq!(connection.account, "111111111111");
         assert_eq!(connection.query_timeout, Duration::from_mins(30));
         assert_eq!(connection.policy, Policy::ReadOnly);
+        assert_eq!(
+            connection.default_catalog.as_deref(),
+            Some("AwsDataCatalog")
+        );
+        assert_eq!(
+            connection.default_database.as_deref(),
+            Some("analytics_dev")
+        );
     }
 
     #[test]
@@ -466,8 +498,6 @@ surprise = true
             "region",
             "role_arn",
             "workgroup",
-            "catalog",
-            "database",
             "policy",
             "query_timeout",
         ] {
@@ -476,6 +506,45 @@ surprise = true
                 "missing issue for {field}: {issues:?}"
             );
         }
+    }
+
+    #[test]
+    fn namespace_defaults_are_optional_and_legacy_names_remain_supported() {
+        let without_defaults = VALID
+            .replace("default_catalog = \"AwsDataCatalog\"\n", "")
+            .replace("default_database = \"analytics_dev\"\n", "");
+        let config = Config::parse(&without_defaults).expect("optional namespace defaults");
+        let connection = config.connection("dev").expect("dev connection");
+        assert_eq!(connection.default_catalog, None);
+        assert_eq!(connection.default_database, None);
+
+        let legacy = VALID
+            .replace("default_catalog", "catalog")
+            .replace("default_database", "database");
+        let config = Config::parse(&legacy).expect("legacy namespace fields");
+        let connection = config.connection("dev").expect("dev connection");
+        assert_eq!(
+            connection.default_catalog.as_deref(),
+            Some("AwsDataCatalog")
+        );
+        assert_eq!(
+            connection.default_database.as_deref(),
+            Some("analytics_dev")
+        );
+    }
+
+    #[test]
+    fn rejects_new_and_legacy_names_for_the_same_default() {
+        let source = VALID.replace(
+            "default_catalog = \"AwsDataCatalog\"",
+            "default_catalog = \"AwsDataCatalog\"\ncatalog = \"legacy\"",
+        );
+        let issues = Config::parse(&source).expect_err("duplicate catalog default");
+        assert!(issues.iter().any(|issue| {
+            issue.contains("cannot set both")
+                && issue.contains("default_catalog")
+                && issue.contains("catalog")
+        }));
     }
 
     #[test]

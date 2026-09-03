@@ -21,6 +21,8 @@ const BYTE_UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
 pub(super) struct QueryContext<'a> {
     pub(super) connection: &'a Connection,
     pub(super) query: &'a ValidatedQuery,
+    pub(super) catalog: Option<&'a str>,
+    pub(super) database: Option<&'a str>,
     pub(super) format: OutputFormat,
     pub(super) table_width: Option<usize>,
 }
@@ -138,8 +140,8 @@ async fn execute_inner<A: AthenaApi, S: Sleeper>(
     let query_id = api
         .start_query(StartQuery {
             query: context.query,
-            catalog: &connection.catalog,
-            database: &connection.database,
+            catalog: context.catalog,
+            database: context.database,
             workgroup: &connection.workgroup,
             output_location,
         })
@@ -331,6 +333,7 @@ pub(super) fn write_operations(
     writer: &mut dyn Write,
     connection: &Connection,
     session_name: &str,
+    namespace: super::Namespace<'_>,
     report: &QueryReport,
     output_path: Option<&std::path::Path>,
     quiet: bool,
@@ -342,11 +345,12 @@ pub(super) fn write_operations(
             sanitize_metadata(&connection.name)
         )?;
         writeln!(writer, "Session: {}", sanitize_metadata(session_name))?;
-        writeln!(
-            writer,
-            "Database: {}",
-            sanitize_metadata(&connection.database)
-        )?;
+        if let Some(catalog) = namespace.catalog {
+            writeln!(writer, "Catalog: {}", sanitize_metadata(catalog))?;
+        }
+        if let Some(database) = namespace.database {
+            writeln!(writer, "Database: {}", sanitize_metadata(database))?;
+        }
         writeln!(writer, "Query ID: {}", sanitize_metadata(&report.query_id))?;
         writeln!(writer, "Status: succeeded")?;
         writeln!(writer, "Rows: {}", report.row_count)?;
@@ -512,8 +516,8 @@ mod tests {
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct RecordedStart {
         sql: String,
-        catalog: String,
-        database: String,
+        catalog: Option<String>,
+        database: Option<String>,
         workgroup: String,
         output_location: Option<String>,
     }
@@ -581,8 +585,8 @@ mod tests {
                 .expect("requests lock")
                 .push(RecordedStart {
                     sql: request.query.sql().to_owned(),
-                    catalog: request.catalog.to_owned(),
-                    database: request.database.to_owned(),
+                    catalog: request.catalog.map(str::to_owned),
+                    database: request.database.map(str::to_owned),
                     workgroup: request.workgroup.to_owned(),
                     output_location: request.output_location.map(str::to_owned),
                 });
@@ -682,8 +686,8 @@ mod tests {
             region: "eu-west-1".to_owned(),
             role_arn: "arn:aws:iam::111111111111:role/honk-readonly".to_owned(),
             workgroup: "analytics-dev".to_owned(),
-            catalog: "AwsDataCatalog".to_owned(),
-            database: "analytics_dev".to_owned(),
+            default_catalog: Some("AwsDataCatalog".to_owned()),
+            default_database: Some("analytics_dev".to_owned()),
             output_location: output_location.map(str::to_owned),
             policy: Policy::ReadOnly,
             query_timeout: Duration::from_mins(30),
@@ -727,6 +731,8 @@ mod tests {
             QueryContext {
                 connection,
                 query,
+                catalog: Some("AwsDataCatalog"),
+                database: Some("analytics_dev"),
                 format: OutputFormat::Table,
                 table_width: Some(120),
             },
@@ -739,6 +745,10 @@ mod tests {
             &mut operations,
             connection,
             "dev-session",
+            crate::athena::Namespace {
+                catalog: Some("AwsDataCatalog"),
+                database: Some("analytics_dev"),
+            },
             &report,
             None,
             false,
@@ -784,6 +794,34 @@ mod tests {
                 "results:query-123",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn query_submission_can_omit_catalog_and_database_context() {
+        let api = MockApi::succeeding([QueryState::Succeeded]);
+        let connection = connection(None);
+        let query = query();
+        let mut output = Vec::new();
+        execute_with_termination(
+            &api,
+            QueryContext {
+                connection: &connection,
+                query: &query,
+                catalog: None,
+                database: None,
+                format: OutputFormat::Table,
+                table_width: Some(120),
+            },
+            &mut output,
+            &RecordingSleeper::default(),
+            std::future::pending(),
+        )
+        .await
+        .expect("query without execution context");
+
+        let request = &api.start_requests.lock().expect("requests lock")[0];
+        assert_eq!(request.catalog, None);
+        assert_eq!(request.database, None);
     }
 
     #[tokio::test]
@@ -1106,6 +1144,8 @@ mod tests {
                 QueryContext {
                     connection: &connection(None),
                     query: &query(),
+                    catalog: Some("AwsDataCatalog"),
+                    database: Some("analytics_dev"),
                     format: OutputFormat::Table,
                     table_width: Some(120),
                 },
@@ -1144,6 +1184,8 @@ mod tests {
                 QueryContext {
                     connection: &connection(None),
                     query: &query(),
+                    catalog: Some("AwsDataCatalog"),
+                    database: Some("analytics_dev"),
                     format: OutputFormat::Table,
                     table_width: Some(120),
                 },
@@ -1181,6 +1223,8 @@ mod tests {
                 QueryContext {
                     connection: &connection(None),
                     query: &query(),
+                    catalog: Some("AwsDataCatalog"),
+                    database: Some("analytics_dev"),
                     format: OutputFormat::Table,
                     table_width: Some(120),
                 },
@@ -1259,6 +1303,8 @@ mod tests {
             QueryContext {
                 connection: &connection(None),
                 query: &query(),
+                catalog: Some("AwsDataCatalog"),
+                database: Some("analytics_dev"),
                 format: OutputFormat::Table,
                 table_width: Some(120),
             },
@@ -1288,6 +1334,8 @@ mod tests {
             QueryContext {
                 connection: &connection(None),
                 query: &query(),
+                catalog: Some("AwsDataCatalog"),
+                database: Some("analytics_dev"),
                 format: OutputFormat::Table,
                 table_width: Some(120),
             },
@@ -1315,6 +1363,8 @@ mod tests {
             QueryContext {
                 connection: &connection(None),
                 query: &query(),
+                catalog: Some("AwsDataCatalog"),
+                database: Some("analytics_dev"),
                 format: OutputFormat::Table,
                 table_width: Some(120),
             },
@@ -1328,6 +1378,10 @@ mod tests {
             &mut operations,
             &connection(None),
             "dev-session",
+            crate::athena::Namespace {
+                catalog: Some("AwsDataCatalog"),
+                database: Some("analytics_dev"),
+            },
             &report,
             None,
             true,

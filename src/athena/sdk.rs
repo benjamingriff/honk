@@ -73,10 +73,12 @@ impl AthenaApi for SdkAthena {
 
     fn start_query<'a>(&'a self, request: StartQuery<'a>) -> ApiFuture<'a, String> {
         Box::pin(async move {
-            let context = QueryExecutionContext::builder()
-                .catalog(request.catalog)
-                .database(request.database)
-                .build();
+            let context = (request.catalog.is_some() || request.database.is_some()).then(|| {
+                QueryExecutionContext::builder()
+                    .set_catalog(request.catalog.map(str::to_owned))
+                    .set_database(request.database.map(str::to_owned))
+                    .build()
+            });
             let reuse = ResultReuseConfiguration::builder()
                 .result_reuse_by_age_configuration(
                     ResultReuseByAgeConfiguration::builder()
@@ -93,7 +95,7 @@ impl AthenaApi for SdkAthena {
                 .client
                 .start_query_execution()
                 .query_string(request.query.sql())
-                .query_execution_context(context)
+                .set_query_execution_context(context)
                 .work_group(request.workgroup)
                 .result_reuse_configuration(reuse)
                 .set_result_configuration(result_configuration)

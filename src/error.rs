@@ -63,6 +63,16 @@ pub enum AppError {
     #[error("{details}")]
     MetadataArguments { details: String },
 
+    #[error(
+        "{command} requires a catalog; pass --catalog or set default_catalog on the connection"
+    )]
+    MissingCatalog { command: &'static str },
+
+    #[error(
+        "{command} requires a database; pass --database or set default_database on the connection"
+    )]
+    MissingDatabase { command: &'static str },
+
     #[error("cannot write command output: {source}")]
     CommandOutput {
         #[source]
@@ -85,7 +95,9 @@ impl AppError {
             | Self::SqlInputNotUtf8 { .. }
             | Self::Policy(_)
             | Self::OutputArguments { .. }
-            | Self::MetadataArguments { .. } => 2,
+            | Self::MetadataArguments { .. }
+            | Self::MissingCatalog { .. }
+            | Self::MissingDatabase { .. } => 2,
             Self::Authentication(_) => 3,
             Self::Athena(error) => error.exit_code(),
             Self::Metadata(error) => error.exit_code(),
@@ -148,7 +160,7 @@ mod tests {
             (
                 metadata::MetadataError::ProviderFailed {
                     operation: metadata::Operation::Tables,
-                    catalog: "test-catalog".into(),
+                    catalog: Some("test-catalog".into()),
                 }
                 .into(),
                 4,

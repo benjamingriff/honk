@@ -35,8 +35,9 @@ account = "111111111111"
 region = "eu-west-1"
 role_arn = "arn:aws:iam::111111111111:role/honk-readonly"
 workgroup = "analytics-dev"
-catalog = "AwsDataCatalog"
-database = "analytics_dev"
+# Optional defaults. Commands can override these with flags.
+default_catalog = "AwsDataCatalog"
+default_database = "analytics_dev"
 # Optional if the workgroup supplies a result location.
 # output_location = "s3://example-athena-results/dev/"
 policy = "read_only"
@@ -44,7 +45,8 @@ query_timeout = "30m"
 ```
 
 Replace every example value with the settings for your account. Do not put AWS
-credentials in this file. Check the result with:
+credentials in this file. `default_catalog` and `default_database` are optional;
+they are conveniences rather than access restrictions. Check the result with:
 
 ```bash
 honk config check
@@ -82,8 +84,9 @@ Discovery uses AWS metadata APIs and does not submit discovery SQL:
 ```bash
 honk catalogs --connection dev --session dev-session
 honk databases --connection dev --session dev-session
-honk tables --connection dev --session dev-session
-honk tables --connection dev --session dev-session --database analytics_dev
+honk databases --connection dev --session dev-session --catalog AwsDataCatalog
+honk tables --connection dev --session dev-session \
+  --catalog AwsDataCatalog --database analytics_dev
 honk describe --connection dev --session dev-session analytics_dev.orders
 ```
 
@@ -95,6 +98,10 @@ Honk accepts one statement as an argument, from a file, or from stdin:
 honk query --connection dev --session dev-session \
   "SELECT order_id, status FROM analytics_dev.orders LIMIT 20"
 
+honk query --connection dev --session dev-session \
+  --catalog AwsDataCatalog --database analytics_dev \
+  "SELECT order_id, status FROM orders LIMIT 20"
+
 honk query --connection dev --session dev-session --file investigation.sql
 
 printf '%s\n' 'SELECT count(*) FROM analytics_dev.orders' | \
@@ -105,6 +112,13 @@ The read-only policy allows `SELECT`, `WITH ... SELECT`, `EXPLAIN` without
 `ANALYZE`, `SHOW`, and `DESCRIBE`. It rejects writes, DDL, `USE`, procedures,
 multiple statements, and anything the policy cannot classify. There is no
 override flag.
+
+Namespace flags take precedence over connection defaults. A query may omit both
+defaults and flags when its SQL is fully qualified. Discovery commands require
+the namespace they need: `databases` needs a catalog; `tables` needs a catalog
+and database; and `describe TABLE` needs both. `describe DATABASE.TABLE` supplies
+the database itself. Honk reports missing discovery context before contacting
+AWS.
 
 ## Output
 

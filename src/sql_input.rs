@@ -1,12 +1,13 @@
 use std::fs::File;
 use std::io::{self, IsTerminal as _, Read as _};
 
-use crate::cli::{DataArgs, QueryArgs};
+use crate::cli::{DataArgs, NamespaceArgs, QueryArgs};
 use crate::error::AppError;
 use crate::policy::athena::{MAX_SQL_BYTES, ValidatedQuery};
 
 pub struct PreparedQuery {
     pub data: DataArgs,
+    pub namespace: NamespaceArgs,
     pub query: ValidatedQuery,
 }
 
@@ -33,6 +34,7 @@ pub fn prepare(arguments: QueryArgs) -> Result<PreparedQuery, AppError> {
     let query = ValidatedQuery::parse(sql)?;
     Ok(PreparedQuery {
         data: arguments.data,
+        namespace: arguments.namespace,
         query,
     })
 }

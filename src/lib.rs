@@ -12,7 +12,10 @@ mod sql_input;
 
 use std::io::Write as _;
 
-use crate::cli::{Cli, Command, ConfigCommand, DataArgs, DescribeArgs, QueryArgs, SessionCommand};
+use crate::cli::{
+    CatalogArgs, Cli, Command, ConfigCommand, DataArgs, DescribeArgs, NamespaceCommandArgs,
+    QueryArgs, SessionCommand,
+};
 use crate::config::Config;
 pub use crate::diagnostics::install_panic_hook;
 use crate::error::AppError;
@@ -53,9 +56,7 @@ pub async fn run(cli: Cli) -> Result<(), AppError> {
         Command::Query(arguments) => run_query_command(&config_path, arguments).await,
         Command::Catalogs(arguments) => run_catalogs_command(&config_path, &arguments).await,
         Command::Databases(arguments) => run_databases_command(&config_path, &arguments).await,
-        Command::Tables { data, database } => {
-            run_tables_command(&config_path, &data, database.as_deref()).await
-        }
+        Command::Tables(arguments) => run_tables_command(&config_path, &arguments).await,
         Command::Describe(arguments) => run_describe_command(&config_path, &arguments).await,
         Command::Session {
             command: SessionCommand::Check(arguments),
@@ -90,6 +91,16 @@ async fn run_query_command(
     let connection = config.connection(&arguments.data.connection)?;
     let prepared = sql_input::prepare(arguments)?;
     let output_plan = resolve_output(&prepared.data)?;
+    let catalog = prepared
+        .namespace
+        .catalog
+        .as_deref()
+        .or(connection.default_catalog.as_deref());
+    let database = prepared
+        .namespace
+        .database
+        .as_deref()
+        .or(connection.default_database.as_deref());
     let session = auth::verify_session(
         connection,
         &prepared.data.session,
@@ -101,6 +112,7 @@ async fn run_query_command(
         &prepared.data.session,
         &session,
         &prepared.query,
+        athena::Namespace { catalog, database },
         output_plan,
         prepared.data.quiet,
     )
@@ -127,16 +139,20 @@ async fn run_catalogs_command(
 
 async fn run_databases_command(
     config_path: &std::path::Path,
-    arguments: &DataArgs,
+    arguments: &CatalogArgs,
 ) -> Result<(), AppError> {
-    let (config, session, output_plan) = prepare_data_command(config_path, arguments).await?;
-    let connection = config.connection(&arguments.connection)?;
+    let config = Config::load(config_path)?;
+    let connection = config.connection(&arguments.data.connection)?;
+    let catalog = required_catalog(arguments.catalog.as_deref(), connection, "databases")?;
+    let output_plan = resolve_output(&arguments.data)?;
+    let session = verify_data_session(connection, &arguments.data.session).await?;
     metadata::run_databases(
         connection,
-        &arguments.session,
+        &arguments.data.session,
         &session,
+        catalog,
         output_plan,
-        arguments.quiet,
+        arguments.data.quiet,
     )
     .await?;
     Ok(())
@@ -144,19 +160,26 @@ async fn run_databases_command(
 
 async fn run_tables_command(
     config_path: &std::path::Path,
-    arguments: &DataArgs,
-    database: Option<&str>,
+    arguments: &NamespaceCommandArgs,
 ) -> Result<(), AppError> {
-    let (config, session, output_plan) = prepare_data_command(config_path, arguments).await?;
-    let connection = config.connection(&arguments.connection)?;
-    let database = database.unwrap_or(&connection.database);
+    let config = Config::load(config_path)?;
+    let connection = config.connection(&arguments.data.connection)?;
+    let catalog = required_catalog(arguments.namespace.catalog.as_deref(), connection, "tables")?;
+    let database = required_database(
+        arguments.namespace.database.as_deref(),
+        connection,
+        "tables",
+    )?;
+    let output_plan = resolve_output(&arguments.data)?;
+    let session = verify_data_session(connection, &arguments.data.session).await?;
     metadata::run_tables(
         connection,
-        &arguments.session,
+        &arguments.data.session,
         &session,
+        catalog,
         database,
         output_plan,
-        arguments.quiet,
+        arguments.data.quiet,
     )
     .await?;
     Ok(())
@@ -168,12 +191,19 @@ async fn run_describe_command(
 ) -> Result<(), AppError> {
     let config = Config::load(config_path)?;
     let connection = config.connection(&arguments.data.connection)?;
-    let object =
-        metadata::parse_object(&arguments.object, &connection.database).map_err(|details| {
-            AppError::MetadataArguments {
-                details: details.to_owned(),
-            }
-        })?;
+    let catalog = required_catalog(
+        arguments.namespace.catalog.as_deref(),
+        connection,
+        "describe",
+    )?;
+    let object = metadata::parse_object(
+        &arguments.object,
+        arguments.namespace.database.as_deref(),
+        connection.default_database.as_deref(),
+    )
+    .map_err(|details| AppError::MetadataArguments {
+        details: details.to_owned(),
+    })?;
     let output_plan = resolve_output(&arguments.data)?;
     let session = auth::verify_session(
         connection,
@@ -186,6 +216,7 @@ async fn run_describe_command(
         &arguments.data.session,
         &session,
         &object,
+        catalog,
         output_plan,
         arguments.data.quiet,
     )
@@ -207,6 +238,33 @@ async fn prepare_data_command(
     )
     .await?;
     Ok((config, session, output_plan))
+}
+
+async fn verify_data_session(
+    connection: &crate::config::Connection,
+    session: &str,
+) -> Result<auth::VerifiedSession, AppError> {
+    Ok(auth::verify_session(connection, session, paths::aws_credentials_file()?).await?)
+}
+
+fn required_catalog<'a>(
+    requested: Option<&'a str>,
+    connection: &'a crate::config::Connection,
+    command: &'static str,
+) -> Result<&'a str, AppError> {
+    requested
+        .or(connection.default_catalog.as_deref())
+        .ok_or(AppError::MissingCatalog { command })
+}
+
+fn required_database<'a>(
+    requested: Option<&'a str>,
+    connection: &'a crate::config::Connection,
+    command: &'static str,
+) -> Result<&'a str, AppError> {
+    requested
+        .or(connection.default_database.as_deref())
+        .ok_or(AppError::MissingDatabase { command })
 }
 
 fn resolve_output(arguments: &DataArgs) -> Result<output::OutputPlan, AppError> {

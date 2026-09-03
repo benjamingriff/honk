@@ -29,8 +29,8 @@ pub(super) enum WorkGroupState {
 
 pub(super) struct StartQuery<'a> {
     pub(super) query: &'a ValidatedQuery,
-    pub(super) catalog: &'a str,
-    pub(super) database: &'a str,
+    pub(super) catalog: Option<&'a str>,
+    pub(super) database: Option<&'a str>,
     pub(super) workgroup: &'a str,
     pub(super) output_location: Option<&'a str>,
 }

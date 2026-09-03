@@ -416,8 +416,8 @@ Work:
 - Build an Athena client from the explicitly selected session profile, not the
   ambient shell.
 - Validate the configured workgroup with `GetWorkGroup`.
-- Submit with catalog, database, workgroup, and configured result location when
-  needed.
+- Submit with the workgroup, any resolved catalog or database execution
+  context, and a configured result location when needed.
 - Disable result reuse in V1 unless the workgroup overrides it.
 - Poll `GetQueryExecution` with bounded exponential backoff.
 - Capture query ID as soon as Athena returns it.
@@ -595,6 +595,20 @@ Exit criteria:
 - An agent can discover an unfamiliar table and its columns without SQL.
 - Manual dev discovery produces no Athena query execution.
 
+### Namespace selection refinement
+
+Implemented on 2026-09-03. Connections now hold optional
+`default_catalog` and `default_database` convenience values. Query, database,
+table, and describe commands accept explicit namespace flags, which take
+precedence over those defaults. Queries can omit both values for fully-qualified
+SQL. Discovery resolves only the context it requires and fails locally when it
+is missing. The legacy configuration keys `catalog` and `database` remain
+readable so existing personal configurations continue to work.
+
+Tests cover configs with and without defaults, legacy-key compatibility,
+override parsing, missing discovery context, qualified describe targets, and
+Athena submission without a query execution context.
+
 ## 12. Phase 7: hardening and contract tests
 
 Goal: make failures predictable before exposing Honk to autonomous use.
@@ -687,7 +701,7 @@ Dev:
 
 Staging and production:
 
-- Correct account, role, region, workgroup, catalog, and database
+- Correct account, role, region, workgroup, and selected namespace
 - Explicit temporary session profiles
 - Read queries only
 - Workgroup scan controls

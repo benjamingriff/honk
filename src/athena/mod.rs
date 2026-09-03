@@ -14,11 +14,18 @@ use crate::config::Connection;
 use crate::output::OutputPlan;
 use crate::policy::athena::ValidatedQuery;
 
+#[derive(Clone, Copy)]
+pub(crate) struct Namespace<'a> {
+    pub catalog: Option<&'a str>,
+    pub database: Option<&'a str>,
+}
+
 pub(crate) async fn run_query(
     connection: &Connection,
     session_name: &str,
     session: &VerifiedSession,
     query: &ValidatedQuery,
+    namespace: Namespace<'_>,
     output_plan: OutputPlan,
     quiet: bool,
 ) -> Result<(), AthenaError> {
@@ -34,6 +41,8 @@ pub(crate) async fn run_query(
         query::QueryContext {
             connection,
             query,
+            catalog: namespace.catalog,
+            database: namespace.database,
             format,
             table_width,
         },
@@ -49,6 +58,7 @@ pub(crate) async fn run_query(
         &mut stderr.lock(),
         connection,
         session_name,
+        namespace,
         &report,
         output_path.as_deref(),
         quiet,

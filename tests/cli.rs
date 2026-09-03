@@ -12,8 +12,8 @@ account = "111111111111"
 region = "eu-west-1"
 role_arn = "arn:aws:iam::111111111111:role/honk-readonly"
 workgroup = "analytics-dev"
-catalog = "AwsDataCatalog"
-database = "analytics_dev"
+default_catalog = "AwsDataCatalog"
+default_database = "analytics_dev"
 policy = "read_only"
 query_timeout = "30m"
 "#;
@@ -471,6 +471,133 @@ fn valid_query_reaches_authentication_after_local_validation() {
             .contains("AWS session profile \"dev-session\" could not provide credentials")
     );
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn query_namespace_is_optional_and_flags_override_defaults() {
+    let config = VALID_CONFIG
+        .replace("default_catalog = \"AwsDataCatalog\"\n", "")
+        .replace("default_database = \"analytics_dev\"\n", "");
+    let home = home_with_config(&config);
+    for arguments in [
+        vec![
+            "query",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+            "SELECT * FROM AwsDataCatalog.analytics_dev.orders LIMIT 1",
+        ],
+        vec![
+            "query",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+            "--catalog",
+            "warehouse",
+            "--database",
+            "reporting",
+            "SELECT 1",
+        ],
+    ] {
+        let output = honk(home.path(), &arguments);
+        assert_eq!(output.status.code(), Some(3), "arguments: {arguments:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("AWS session profile"));
+    }
+}
+
+#[test]
+fn discovery_requires_only_the_namespace_it_needs() {
+    let config = VALID_CONFIG
+        .replace("default_catalog = \"AwsDataCatalog\"\n", "")
+        .replace("default_database = \"analytics_dev\"\n", "");
+    let home = home_with_config(&config);
+
+    let databases = honk(
+        home.path(),
+        &[
+            "databases",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+        ],
+    );
+    assert_eq!(databases.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&databases.stderr).contains("--catalog"));
+
+    let tables = honk(
+        home.path(),
+        &[
+            "tables",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+            "--catalog",
+            "AwsDataCatalog",
+        ],
+    );
+    assert_eq!(tables.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&tables.stderr).contains("--database"));
+
+    for arguments in [
+        vec![
+            "databases",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+            "--catalog",
+            "AwsDataCatalog",
+        ],
+        vec![
+            "tables",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+            "--catalog",
+            "AwsDataCatalog",
+            "--database",
+            "analytics_dev",
+        ],
+        vec![
+            "describe",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+            "--catalog",
+            "AwsDataCatalog",
+            "analytics_dev.orders",
+        ],
+    ] {
+        let output = honk(home.path(), &arguments);
+        assert_eq!(output.status.code(), Some(3), "arguments: {arguments:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("AWS session profile"));
+    }
+}
+
+#[test]
+fn describe_rejects_conflicting_database_sources() {
+    let home = home_with_config(VALID_CONFIG);
+    let output = honk(
+        home.path(),
+        &[
+            "describe",
+            "--connection",
+            "dev",
+            "--session",
+            "dev-session",
+            "--database",
+            "analytics_dev",
+            "archive.orders",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be combined"));
 }
 
 #[test]

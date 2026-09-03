@@ -22,18 +22,11 @@ pub enum Command {
     /// List Athena data catalogs available to the connection.
     Catalogs(DataArgs),
 
-    /// List databases in the configured catalog.
-    Databases(DataArgs),
+    /// List databases in a catalog.
+    Databases(CatalogArgs),
 
     /// List tables in a database.
-    Tables {
-        #[command(flatten)]
-        data: DataArgs,
-
-        /// Override the connection's configured database.
-        #[arg(long, value_name = "NAME", value_parser = non_blank)]
-        database: Option<String>,
-    },
+    Tables(NamespaceCommandArgs),
 
     /// Describe a table or view.
     Describe(DescribeArgs),
@@ -59,6 +52,9 @@ pub struct QueryArgs {
     #[command(flatten)]
     pub data: DataArgs,
 
+    #[command(flatten)]
+    pub namespace: NamespaceArgs,
+
     /// Read SQL from this file instead of the positional argument or stdin.
     #[arg(long, value_name = "PATH", conflicts_with = "sql")]
     pub file: Option<PathBuf>,
@@ -73,9 +69,42 @@ pub struct DescribeArgs {
     #[command(flatten)]
     pub data: DataArgs,
 
+    #[command(flatten)]
+    pub namespace: NamespaceArgs,
+
     /// Table to describe, optionally qualified by database.
     #[arg(value_name = "[DATABASE.]TABLE", value_parser = non_blank)]
     pub object: String,
+}
+
+#[derive(Debug, Args)]
+pub struct CatalogArgs {
+    #[command(flatten)]
+    pub data: DataArgs,
+
+    /// Catalog to use instead of the connection's default catalog.
+    #[arg(long, value_name = "NAME", value_parser = non_blank)]
+    pub catalog: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct NamespaceCommandArgs {
+    #[command(flatten)]
+    pub data: DataArgs,
+
+    #[command(flatten)]
+    pub namespace: NamespaceArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct NamespaceArgs {
+    /// Catalog to use instead of the connection's default catalog.
+    #[arg(long, value_name = "NAME", value_parser = non_blank)]
+    pub catalog: Option<String>,
+
+    /// Database to use instead of the connection's default database.
+    #[arg(long, value_name = "NAME", value_parser = non_blank)]
+    pub database: Option<String>,
 }
 
 #[derive(Debug, Args)]

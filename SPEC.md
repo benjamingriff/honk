@@ -174,6 +174,8 @@ Useful options:
 --connection <name>  required
 --session <profile>  required; existing AWS profile with temporary credentials
 --file <path>        read SQL from a file
+--catalog <name>     override the connection's default catalog
+--database <name>    override the connection's default database
 --format <format>    table|csv|tsv|json|jsonl|markdown
 --output <path>      write result data to a file
 --force              replace an existing output file
@@ -188,8 +190,9 @@ error.
 ```bash
 honk catalogs --connection prod --session prod-session
 honk databases --connection prod --session prod-session
-honk tables --connection prod --session prod-session
-honk tables --connection prod --session prod-session --database analytics
+honk databases --connection prod --session prod-session --catalog AwsDataCatalog
+honk tables --connection prod --session prod-session \
+  --catalog AwsDataCatalog --database analytics
 honk describe --connection prod --session prod-session analytics.orders
 ```
 
@@ -237,8 +240,8 @@ account = "111111111111"
 region = "eu-west-1"
 role_arn = "arn:aws:iam::111111111111:role/honk-readonly"
 workgroup = "analytics-dev"
-catalog = "AwsDataCatalog"
-database = "analytics_dev"
+default_catalog = "AwsDataCatalog"
+default_database = "analytics_dev"
 # Optional when the workgroup supplies and enforces its own result location.
 # output_location = "s3://company-athena-results/dev/"
 policy = "read_only"
@@ -249,8 +252,8 @@ account = "222222222222"
 region = "eu-west-1"
 role_arn = "arn:aws:iam::222222222222:role/honk-readonly"
 workgroup = "analytics-staging"
-catalog = "AwsDataCatalog"
-database = "analytics_staging"
+default_catalog = "AwsDataCatalog"
+default_database = "analytics_staging"
 policy = "read_only"
 query_timeout = "30m"
 
@@ -259,22 +262,25 @@ account = "333333333333"
 region = "eu-west-1"
 role_arn = "arn:aws:iam::333333333333:role/honk-readonly"
 workgroup = "analytics-prod"
-catalog = "AwsDataCatalog"
-database = "analytics"
+default_catalog = "AwsDataCatalog"
+default_database = "analytics"
 policy = "read_only"
 query_timeout = "15m"
 ```
 
-The workgroup, catalog, database, role ARNs, and account-specific values will be
-filled in during local setup. The example describes the intended shape, not
-shipped defaults.
+The workgroup, namespace defaults, role ARNs, and account-specific values will
+be filled in during local setup. The example describes the intended shape, not
+shipped defaults. Catalog and database defaults may be omitted.
 
 Configuration rules:
 
 - Unknown fields are errors rather than silently ignored.
 - Every connection must set `policy = "read_only"`.
 - Missing or unknown policy values are errors.
-- Role, region, workgroup, catalog, and database values must be non-empty.
+- Role, region, and workgroup values must be non-empty.
+- `default_catalog` and `default_database` are optional, non-empty convenience
+  values. The legacy names `catalog` and `database` remain readable for existing
+  configs but must not be combined with their replacement names.
 - The account in `role_arn` must match the connection's `account` field.
 - `output_location` is optional. If it is absent, the workgroup must provide a
   usable result location.
@@ -428,6 +434,14 @@ Honk does not impose a catalog or database allowlist in V1. A read query may use
 fully-qualified names and cross-database joins. IAM determines which objects the
 selected AWS role can read.
 
+`--catalog` and `--database` select the Athena query execution context and take
+precedence over connection defaults. Queries may omit either or both values;
+this supports fully-qualified SQL without coupling a connection to one
+namespace. Discovery commands fail locally when their required context cannot
+be resolved. `databases` requires a catalog, `tables` requires both values, and
+an unqualified `describe TABLE` requires both. `describe DATABASE.TABLE`
+provides its database and must not be combined with `--database`.
+
 ### Parser decision
 
 The completed spike selects `sqlparser` 0.62.0 with an exact version pin and a
@@ -474,7 +488,8 @@ The execution sequence is:
 5. Build an Athena client from that session.
 6. Call `GetWorkGroup` and verify that the workgroup is enabled and has usable
    result storage.
-7. Call `StartQueryExecution` with catalog, database, and workgroup.
+7. Call `StartQueryExecution` with the workgroup and any resolved catalog or
+   database execution context.
 8. Poll `GetQueryExecution` until a terminal state.
 9. On success, page through `GetQueryResults`.
 10. Convert each page into typed rows and write it immediately.
