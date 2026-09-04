@@ -763,6 +763,8 @@ stable. It tells coding agents to:
 - Always name a connection.
 - Always name the session profile supplied by the user.
 - Always request JSON Lines for analysis.
+- Read a relevant dbt project's source files for model intent, lineage, and
+  descriptions before querying unfamiliar data.
 - Use metadata commands before guessing schemas.
 - Keep investigative queries bounded with predicates, aggregation, or `LIMIT`
   where practical.
@@ -773,6 +775,11 @@ stable. It tells coding agents to:
   expired.
 - Report the connection, session profile, and Athena query IDs used in its final
   analysis.
+
+The live command sequence and context-free agent acceptance prompts live in
+[`docs/manual-release-checklist.md`](docs/manual-release-checklist.md). Automated
+tests never run this checklist because it requires prepared AWS sessions and
+real environment knowledge.
 
 ## 22. Deferred work
 

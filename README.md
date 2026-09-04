@@ -77,6 +77,43 @@ connection:
 honk session check --connection dev --session dev-session
 ```
 
+## Use Honk from a coding agent
+
+The repository includes a first-party agent skill at `skills/honk`. The same
+`SKILL.md` works with Codex and Claude Code.
+
+For Codex, link it into the personal skill directory, then start a new agent
+session:
+
+```bash
+mkdir -p "$HOME/.codex/skills"
+ln -s "$(pwd)/skills/honk" "$HOME/.codex/skills/honk"
+```
+
+For Claude Code, link it into the personal skill directory:
+
+```bash
+mkdir -p "$HOME/.claude/skills"
+ln -s "$(pwd)/skills/honk" "$HOME/.claude/skills/honk"
+```
+
+Claude Code may load the skill when it matches the task, or you can invoke it as
+`/honk`. To keep the skill inside one project instead, place the link at
+`.claude/skills/honk` in that project. See Anthropic's
+[Claude Code skills documentation](https://code.claude.com/docs/en/slash-commands).
+
+Give the agent both names with the task:
+
+```text
+Use Honk with connection dev and session profile dev-session to investigate
+<question>. Discover the schema first and report the Athena query IDs you use.
+```
+
+The skill keeps lakehouse access inside Honk and never manages AWS credentials.
+It can use a dbt project as read-only context before querying. The user must
+prepare or refresh the named profile. The full live verification worksheet is
+[docs/manual-release-checklist.md](docs/manual-release-checklist.md).
+
 ## Discover data
 
 Discovery uses AWS metadata APIs and does not submit discovery SQL:

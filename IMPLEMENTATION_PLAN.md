@@ -660,6 +660,12 @@ Exit criteria:
 
 Goal: complete M4 with the actual user workflow.
 
+Implementation completed on 2026-09-03. The repository now ships
+`skills/honk/SKILL.md` and a live verification worksheet at
+`docs/manual-release-checklist.md`. Automated validation remains AWS-free. M4
+stays open until the user completes the dev checks, limited staging and
+production checks, and both context-free agent acceptance runs.
+
 ### 13.1 First-party skill
 
 Write `skills/honk/SKILL.md` after the CLI contract stops changing. It should
@@ -668,6 +674,8 @@ teach an agent to:
 - Check configuration and session status when needed.
 - Name every connection explicitly.
 - Name the user-supplied session profile explicitly.
+- Read a relevant dbt project's model SQL, properties, sources, and project
+  configuration before querying unfamiliar data.
 - Discover metadata before writing unfamiliar SQL.
 - Request JSON Lines explicitly.
 - Use bounded queries and inspect intermediate results.
